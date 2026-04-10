@@ -4,56 +4,71 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
+import android.preference.PreferenceManager
 import android.widget.Button
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import com.example.ubicacion.R
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.maps.*
-import com.google.android.gms.maps.model.*
+import androidx.core.content.ContextCompat
+import org.osmdroid.config.Configuration
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.util.GeoPoint
+import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Polyline
 import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
 
-class MapsActivity : AppCompatActivity(), OnMapReadyCallback {
+class MapsActivity : AppCompatActivity() {
 
-    private var mMap: GoogleMap? = null
-    private var homeLocation: LatLng? = null
-    // REEMPLAZA ESTA KEY con la de OpenRouteService
-    private val ORS_API_KEY = "TU_API_KEY_AQUI"
+    private lateinit var map: MapView
+    private var homeLocation: GeoPoint? = null
+
+    // ✅ TU LLAVE DE OPENROUTE SERVICE
+    private val ORS_API_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjBlZDk0ZjYyNTYxYjQ0MDY4NWZmMmQ3NmU5MThiMWFkIiwiaCI6Im11cm11cjY0In0="
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Configuración necesaria para OSM
+        Configuration.getInstance().load(this, PreferenceManager.getDefaultSharedPreferences(this))
         setContentView(R.layout.activity_maps)
 
-        // Inicializar fragmento del mapa de forma segura
-        val mapFragment = supportFragmentManager.findFragmentById(R.id.map) as? SupportMapFragment
-        mapFragment?.getMapAsync(this)
+        map = findViewById(R.id.map)
+        map.setTileSource(TileSourceFactory.MAPNIK)
+        map.setMultiTouchControls(true)
+        val mapController = map.controller
+        mapController.setZoom(15.0)
+
+        // Punto inicial (puedes poner las coordenadas de tu ciudad)
+        val startPoint = GeoPoint(20.21, -101.18)
+        mapController.setCenter(startPoint)
+
+        checkPermissions()
 
         findViewById<Button>(R.id.btnSetHome).setOnClickListener {
-            mMap?.cameraPosition?.target?.let {
-                homeLocation = it
-                Toast.makeText(this, "Casa guardada correctamente", Toast.LENGTH_SHORT).show()
-            } ?: Toast.makeText(this, "El mapa no está listo", Toast.LENGTH_SHORT).show()
+            val center = map.mapCenter as GeoPoint
+            homeLocation = center
+
+            // Poner un marcador en la casa
+            map.overlays.clear()
+            val homeMarker = Marker(map)
+            homeMarker.position = center
+            homeMarker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+            homeMarker.title = "Mi Casa"
+            map.overlays.add(homeMarker)
+            map.invalidate()
+
+            Toast.makeText(this, "Casa guardada", Toast.LENGTH_SHORT).show()
+
+            // Simulamos que al guardar la casa, trazamos ruta desde un punto cercano
+            // En una app real, usarías la ubicación del GPS
+            drawRoute(GeoPoint(20.22, -101.19), center)
         }
     }
 
-    override fun onMapReady(googleMap: GoogleMap) {
-        mMap = googleMap
-        enableMyLocation()
-
-        mMap?.setOnMyLocationButtonClickListener {
-            homeLocation?.let { home ->
-                getDeviceLocation { myLocation ->
-                    drawRoute(myLocation, home)
-                }
-            } ?: Toast.makeText(this, "Primero fija la ubicación de tu casa", Toast.LENGTH_SHORT).show()
-            false
-        }
-    }
-
-    private fun drawRoute(start: LatLng, end: LatLng) {
+    private fun drawRoute(start: GeoPoint, end: GeoPoint) {
         val service = NetworkClient.retrofit.create(RouteService::class.java)
         val startStr = "${start.longitude},${start.latitude}"
         val endStr = "${end.longitude},${end.latitude}"
@@ -62,46 +77,39 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback {
             override fun onResponse(call: Call<RouteResponse>, response: Response<RouteResponse>) {
                 if (response.isSuccessful) {
                     val points = response.body()?.features?.firstOrNull()?.geometry?.coordinates
-                    val polylineOptions = PolylineOptions().color(Color.BLUE).width(12f)
+                    val line = Polyline()
+                    line.outlinePaint.color = Color.BLUE
+                    line.outlinePaint.strokeWidth = 10f
 
+                    val routePoints = mutableListOf<GeoPoint>()
                     points?.forEach {
-                        polylineOptions.add(LatLng(it[1], it[0]))
+                        routePoints.add(GeoPoint(it[1], it[0]))
                     }
-                    mMap?.addPolyline(polylineOptions)
-
-                    val bounds = LatLngBounds.Builder().include(start).include(end).build()
-                    mMap?.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 100))
-                } else {
-                    Toast.makeText(this@MapsActivity, "Error en la API de rutas: ${response.code()}", Toast.LENGTH_SHORT).show()
+                    line.setPoints(routePoints)
+                    map.overlays.add(line)
+                    map.invalidate()
                 }
             }
-
             override fun onFailure(call: Call<RouteResponse>, t: Throwable) {
-                Toast.makeText(this@MapsActivity, "Error de red: ${t.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MapsActivity, "Error de ruta", Toast.LENGTH_SHORT).show()
             }
         })
     }
 
-    private fun enableMyLocation() {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-            mMap?.isMyLocationEnabled = true
-        } else {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 1)
+    private fun checkPermissions() {
+        val permissions = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        if (permissions.any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }) {
+            ActivityCompat.requestPermissions(this, permissions, 1)
         }
     }
 
-    private fun getDeviceLocation(callback: (LatLng) -> Unit) {
-        val fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        try {
-            fusedLocationClient.lastLocation.addOnSuccessListener { location ->
-                if (location != null) {
-                    callback(LatLng(location.latitude, location.longitude))
-                } else {
-                    Toast.makeText(this, "No se pudo obtener ubicación actual", Toast.LENGTH_SHORT).show()
-                }
-            }
-        } catch (e: SecurityException) {
-            Toast.makeText(this, "Permiso de ubicación denegado", Toast.LENGTH_SHORT).show()
-        }
+    override fun onResume() {
+        super.onResume()
+        map.onResume()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        map.onPause()
     }
 }
